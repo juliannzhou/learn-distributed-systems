@@ -1,0 +1,3 @@
+[submodule "mit-6.824/labs/lab1/6.5840"]
+	path = mit-6.824/labs/lab1/6.5840
+	url = git://g.csail.mit.edu/6.5840-golabs-2024
