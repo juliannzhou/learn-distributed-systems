@@ -23,6 +23,7 @@ type ExampleArgs struct {
 type ExampleReply struct {
 	Y         int
 	Filenames []string
+	NReduce   int
 }
 
 // Add your RPC definitions here.

@@ -30,9 +30,13 @@ func Worker(mapf func(string, string) []KeyValue,
 	// Your worker implementation here.
 
 	// uncomment to send the Example RPC to the coordinator.
-	filenames, _ := CallExample()
-	intermediate := []KeyValue{}
-	for _, filename := range filenames {
+	filenames, nReduce, err := CallExample()
+	if err != nil {
+		log.Fatalf("failed to get filenames and NReduce: %v", err)
+	}
+
+	intermediate := make([][]KeyValue, nReduce)
+	for i, filename := range filenames {
 		file, err := os.Open(filename)
 		if err != nil {
 			log.Fatalf("cannot open %v", filename)
@@ -43,30 +47,49 @@ func Worker(mapf func(string, string) []KeyValue,
 		}
 		file.Close()
 		kva := mapf(filename, string(content))
-		intermediate = append(intermediate, kva...)
 
-		oname := "mr-out-0"
-		ofile, _ := os.Create(oname)
+		args := UpdateMapTaskStatusArgs{
+			TaskID: i,
+			Status: TaskStatusCompleted,
+		}
+		reply := UpdateTaskStatusReply{}
 
-		i := 0
-		for i < len(intermediate) {
-			j := i + 1
-			for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
-				j++
-			}
-			values := []string{}
-			for k := i; k < j; k++ {
-				values = append(values, intermediate[k].Value)
-			}
-			output := reducef(intermediate[i].Key, values)
-
-			// this is the correct format for each line of Reduce output.
-			fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
-
-			i = j
+		if !call("Coordinator.UpdateMapTaskStatus", &args, &reply) {
+			log.Fatalf("failed to update map task status")
 		}
 
-		ofile.Close()
+		for _, kv := range kva {
+			reduceTask := ihash(kv.Key) % nReduce
+			intermediate[reduceTask] = append(intermediate[reduceTask], kv)
+		}
+	}
+
+	for reduceTask, kvs := range intermediate {
+		values := make([]string, len(kvs))
+		for i, kv := range kvs {
+			values[i] = kv.Value
+		}
+
+		output := reducef(kvs[0].Key, values)
+
+		reduceFileName := fmt.Sprintf("mr-out%d", reduceTask)
+		reduceFile, err := os.Create(reduceFileName)
+
+		args := UpdateReduceTaskStatusArgs{
+			TaskID: reduceTask,
+			Status: TaskStatusCompleted, // Or TaskStatusFailed if an error occurred
+		}
+		reply := UpdateTaskStatusReply{}
+		if !call("Coordinator.UpdateReduceTaskStatus", &args, &reply) {
+			log.Fatalf("failed to update map task status")
+		}
+
+		if err != nil {
+			log.Fatalf("cannot create reduce output file %s: %v", reduceFileName, err)
+		}
+		defer reduceFile.Close()
+
+		fmt.Fprintf(reduceFile, "%v\n", output)
 	}
 
 }
@@ -74,7 +97,7 @@ func Worker(mapf func(string, string) []KeyValue,
 // example function to show how to make an RPC call to the coordinator.
 //
 // the RPC argument and reply types are defined in rpc.go.
-func CallExample() ([]string, error) {
+func CallExample() ([]string, int, error) {
 
 	// declare an argument structure.
 	args := ExampleArgs{}
@@ -93,10 +116,10 @@ func CallExample() ([]string, error) {
 	if ok {
 		// reply.Y should be 100.
 		fmt.Printf("reply.Y %v\n", reply.Y)
-		return reply.Filenames, nil
+		return reply.Filenames, reply.NReduce, nil
 	} else {
 		fmt.Printf("call failed!\n")
-		return nil, nil
+		return nil, -1, nil
 	}
 }
 
