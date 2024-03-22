@@ -19,23 +19,11 @@ const (
 	TaskStatusFailed
 )
 
-type TaskType int
-
-const (
-	MapTask TaskType = iota
-	ReduceTask
-)
-
-type Task struct {
-	ID     int
-	Type   TaskType
-	Status TaskStatus
-}
-
 // Arguments for updating the status of a map task.
 type UpdateMapTaskStatusArgs struct {
-	TaskID int
-	Status TaskStatus
+	InputFile        string
+	IntermediateFile string
+	TaskID           int
 }
 
 // Arguments for updating the status of a reduce task.

@@ -26,6 +26,23 @@ type ExampleReply struct {
 	NReduce   int
 }
 
+type MapTask struct {
+	InputFile     string
+	MapTaskNumber int
+	ReduceCount   int
+}
+
+type ReduceTask struct {
+	IntermediateFiles []string
+	ReduceCount       int
+}
+
+type RequestTaskReply struct {
+	MapTask    *MapTask
+	ReduceTask *ReduceTask
+	Done       bool
+}
+
 // Add your RPC definitions here.
 
 // Cook up a unique-ish UNIX-domain socket name
