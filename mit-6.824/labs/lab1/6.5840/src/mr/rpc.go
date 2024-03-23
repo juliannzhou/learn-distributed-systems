@@ -37,10 +37,23 @@ type ReduceTask struct {
 	ReduceCount       int
 }
 
+type RequestTaskArgs struct {
+	Pid int
+}
+
 type RequestTaskReply struct {
 	MapTask    *MapTask
 	ReduceTask *ReduceTask
 	Done       bool
+}
+
+type UpdateMapTaskArgs struct {
+	InputFile        string
+	IntermediateFile []string
+	Pid              int
+}
+
+type UpdateMapTaskReply struct {
 }
 
 // Add your RPC definitions here.

@@ -1,13 +1,23 @@
 package mr
 
 import (
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"io"
 	"log"
 	"net/rpc"
 	"os"
+	"sort"
 )
+
+// for sorting by key.
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 // Map functions return a slice of KeyValue.
 type KeyValue struct {
@@ -26,101 +36,127 @@ func ihash(key string) int {
 // main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
-
+	stop := false
 	// Your worker implementation here.
 
 	// uncomment to send the Example RPC to the coordinator.
-	filenames, nReduce, err := CallExample()
+	for !stop {
+		reply := RequestTask()
+
+		if reply.Done {
+			stop = true
+			fmt.Println("all tasks done, exit...")
+			continue
+		}
+
+		if reply.MapTask != nil {
+			MapTaskHandler(reply.MapTask, mapf)
+		}
+	}
+
+	// for reduceTask, kvs := range intermediate {
+	// 	values := make([]string, len(kvs))
+	// 	for i, kv := range kvs {
+	// 		values[i] = kv.Value
+	// 	}
+
+	// 	output := reducef(kvs[0].Key, values)
+
+	// 	reduceFileName := fmt.Sprintf("mr-out%d", reduceTask)
+	// 	reduceFile, err := os.Create(reduceFileName)
+
+	// 	args := UpdateReduceTaskStatusArgs{
+	// 		TaskID: reduceTask,
+	// 		Status: TaskStatusCompleted, // Or TaskStatusFailed if an error occurred
+	// 	}
+	// 	reply := UpdateTaskStatusReply{}
+	// 	if !call("Coordinator.UpdateReduceTaskStatus", &args, &reply) {
+	// 		log.Fatalf("failed to update map task status")
+	// 	}
+
+	// 	if err != nil {
+	// 		log.Fatalf("cannot create reduce output file %s: %v", reduceFileName, err)
+	// 	}
+	// 	defer reduceFile.Close()
+
+	// 	fmt.Fprintf(reduceFile, "%v\n", output)
+	// }
+
+}
+
+func MapTaskHandler(task *MapTask, mapf func(string, string) []KeyValue) {
+	filename := task.InputFile
+	reduceCount := task.ReduceCount
+
+	file, err := os.Open(filename)
 	if err != nil {
-		log.Fatalf("failed to get filenames and NReduce: %v", err)
+		log.Fatalf("cannot open %v", filename)
 	}
 
-	intermediate := make([][]KeyValue, nReduce)
-	for i, filename := range filenames {
-		file, err := os.Open(filename)
-		if err != nil {
-			log.Fatalf("cannot open %v", filename)
-		}
-		content, err := io.ReadAll(file)
-		if err != nil {
-			log.Fatalf("cannot read %v", filename)
-		}
-		file.Close()
-		kva := mapf(filename, string(content))
+	content, err := io.ReadAll(file)
+	if err != nil {
+		log.Fatalf("cannot read %v", filename)
+	}
+	file.Close()
 
-		args := UpdateMapTaskStatusArgs{
-			TaskID: i,
-			Status: TaskStatusCompleted,
-		}
-		reply := UpdateTaskStatusReply{}
-
-		if !call("Coordinator.UpdateMapTaskStatus", &args, &reply) {
-			log.Fatalf("failed to update map task status")
-		}
-
-		for _, kv := range kva {
-			reduceTask := ihash(kv.Key) % nReduce
-			intermediate[reduceTask] = append(intermediate[reduceTask], kv)
-		}
+	kva := mapf(filename, string(content))
+	keys := make([]KeyValue, 0, len(kva))
+	for _, k := range kva {
+		keys = append(keys, k)
 	}
 
-	for reduceTask, kvs := range intermediate {
-		values := make([]string, len(kvs))
-		for i, kv := range kvs {
-			values[i] = kv.Value
-		}
+	sort.Sort(ByKey(kva))
+	partitionedKva := make([][]KeyValue, reduceCount)
 
-		output := reducef(kvs[0].Key, values)
-
-		reduceFileName := fmt.Sprintf("mr-out%d", reduceTask)
-		reduceFile, err := os.Create(reduceFileName)
-
-		args := UpdateReduceTaskStatusArgs{
-			TaskID: reduceTask,
-			Status: TaskStatusCompleted, // Or TaskStatusFailed if an error occurred
-		}
-		reply := UpdateTaskStatusReply{}
-		if !call("Coordinator.UpdateReduceTaskStatus", &args, &reply) {
-			log.Fatalf("failed to update map task status")
-		}
-
-		if err != nil {
-			log.Fatalf("cannot create reduce output file %s: %v", reduceFileName, err)
-		}
-		defer reduceFile.Close()
-
-		fmt.Fprintf(reduceFile, "%v\n", output)
+	for _, v := range kva {
+		partitionKey := ihash(v.Key) % reduceCount
+		partitionedKva[partitionKey] = append(partitionedKva[partitionKey], v)
 	}
 
+	intermediateFiles := make([]string, reduceCount)
+
+	for i := 0; i < reduceCount; i++ {
+		intermediateFile := fmt.Sprintf("mr-%v-%v", task.MapTaskNumber, i)
+		intermediateFiles[i] = intermediateFile
+		ofile, _ := os.Create(intermediateFile)
+
+		b, err := json.Marshal(partitionedKva[i])
+		if err != nil {
+			fmt.Println("Marshall error: ", err)
+		}
+		ofile.Write(b)
+
+		ofile.Close()
+	}
+
+}
+
+func UpdateMapTask(args UpdateMapTaskArgs) UpdateMapTaskReply {
+	reply := UpdateMapTaskReply{}
+	call("Coordinator.UpdateMapTask", &args, &reply)
+	return reply
 }
 
 // example function to show how to make an RPC call to the coordinator.
 //
 // the RPC argument and reply types are defined in rpc.go.
-func CallExample() ([]string, int, error) {
+func RequestTask() RequestTaskReply {
 
 	// declare an argument structure.
-	args := ExampleArgs{}
+	args := RequestTaskArgs{}
 
 	// fill in the argument(s).
-	args.X = 99
+	args.Pid = os.Getpid()
 
 	// declare a reply structure.
-	reply := ExampleReply{}
+	reply := RequestTaskReply{}
 
 	// send the RPC request, wait for the reply.
 	// the "Coordinator.Example" tells the
 	// receiving server that we'd like to call
 	// the Example() method of struct Coordinator.
-	ok := call("Coordinator.Example", &args, &reply)
-	if ok {
-		// reply.Y should be 100.
-		fmt.Printf("reply.Y %v\n", reply.Y)
-		return reply.Filenames, reply.NReduce, nil
-	} else {
-		fmt.Printf("call failed!\n")
-		return nil, -1, nil
-	}
+	call("Coordinator.RequestTask", &args, &reply)
+	return reply
 }
 
 // send an RPC request to the coordinator, wait for the response.

@@ -1,7 +1,6 @@
 package mr
 
 import (
-	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -13,11 +12,18 @@ import (
 type TaskStatus int
 
 const (
-	TaskStatusPending TaskStatus = iota
+	TaskStatusUndefined TaskStatus = iota
+	TaskStatusPending
 	TaskStatusRunning
 	TaskStatusCompleted
 	TaskStatusFailed
+	TaskStatusIdle
+	TaskStatusBusy
 )
+
+type Status struct {
+	Status TaskStatus
+}
 
 // Arguments for updating the status of a map task.
 type UpdateMapTaskStatusArgs struct {
@@ -39,11 +45,14 @@ type UpdateTaskStatusReply struct {
 
 type Coordinator struct {
 	// Your definitions here.
-	filesLock   sync.Mutex
-	files       []string
-	nReduce     int
-	mapTasks    []*Task
-	reduceTasks []*Task
+	filesLock         sync.Mutex
+	workerStatus      map[int]TaskStatus
+	files             []string
+	intermediateFiles map[int][]string
+	nReduce           int
+	mapTaskStatus     map[string]Status
+	mapTaskNumber     int
+	reduceTaskStatus  map[string]Status
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -51,13 +60,52 @@ type Coordinator struct {
 // an example RPC handler.
 //
 // the RPC argument and reply types are defined in rpc.go.
-func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
+func (c *Coordinator) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply) error {
+	c.filesLock.Lock()
+
+	if c.workerStatus[args.Pid] == TaskStatusUndefined {
+		c.workerStatus[args.Pid] = TaskStatusIdle
+	}
+
+	var mapTask *MapTask = nil
+	for k, v := range c.mapTaskStatus {
+		if v.Status == TaskStatusPending {
+			mapTask = &MapTask{InputFile: k, MapTaskNumber: c.mapTaskNumber, ReduceCount: c.nReduce}
+			c.mapTaskStatus[k] = Status{Status: TaskStatusRunning}
+			c.mapTaskNumber++
+			break
+		}
+	}
+
+	if mapTask != nil {
+		reply.MapTask = mapTask
+		reply.Done = false
+		c.workerStatus[args.Pid] = TaskStatusBusy
+		c.filesLock.Unlock()
+		return nil
+	}
+
+	if !c.MapDone() {
+		reply.MapTask = mapTask
+		reply.Done = false
+		c.filesLock.Unlock()
+		return nil
+	}
+
+	c.filesLock.Unlock()
+	reply.Done = c.Done()
+	return nil
+}
+
+func (c *Coordinator) UpdateMapTask(args UpdateMapTaskArgs, reply *UpdateMapTaskReply) error {
 	c.filesLock.Lock()
 	defer c.filesLock.Unlock()
 
-	reply.Y = args.X + 1
-	reply.Filenames = c.files
-	reply.NReduce = c.nReduce
+	c.workerStatus[args.Pid] = TaskStatusIdle
+	c.mapTaskStatus[args.InputFile] = Status{Status: TaskStatusCompleted}
+	for r := 0; r < c.nReduce; r++ {
+		c.intermediateFiles[r] = append(c.intermediateFiles[r], args.IntermediateFile[r])
+	}
 	return nil
 }
 
@@ -79,20 +127,16 @@ func (c *Coordinator) server() {
 	}()
 }
 
-func (c *Coordinator) UpdateMapTaskStatus(args *UpdateMapTaskStatusArgs, reply *UpdateTaskStatusReply) error {
-	if args.TaskID < 0 || args.TaskID >= len(c.mapTasks) {
-		return fmt.Errorf("invalid map task ID")
-	}
-	c.mapTasks[args.TaskID].Status = args.Status
-	return nil
-}
+func (c *Coordinator) MapDone() bool {
+	// Your code here.
+	ret := true
 
-func (c *Coordinator) UpdateReduceTaskStatus(args *UpdateReduceTaskStatusArgs, reply *UpdateTaskStatusReply) error {
-	if args.TaskID < 0 || args.TaskID >= len(c.reduceTasks) {
-		return fmt.Errorf("invalid reduce task ID")
+	for _, v := range c.mapTaskStatus {
+		if v.Status != TaskStatusCompleted {
+			ret = false
+		}
 	}
-	c.reduceTasks[args.TaskID].Status = args.Status
-	return nil
+	return ret
 }
 
 // main/mrcoordinator.go calls Done() periodically to find out
@@ -101,22 +145,23 @@ func (c *Coordinator) Done() bool {
 	// Your code here.
 	c.filesLock.Lock()
 	defer c.filesLock.Unlock()
+	ret := true
 
 	// Check if all map tasks have completed
-	for _, task := range c.mapTasks {
+	for _, task := range c.mapTaskStatus {
 		if task.Status != TaskStatusCompleted {
 			return false
 		}
 	}
 
 	// Check if all reduce tasks have completed
-	for _, task := range c.reduceTasks {
-		if task.Status != TaskStatusCompleted {
-			return false
-		}
-	}
+	// for _, task := range c.reduceTasks {
+	// 	if task.Status != TaskStatusCompleted {
+	// 		return false
+	// 	}
+	// }
 
-	return true
+	return ret
 }
 
 // create a Coordinator.
@@ -125,19 +170,21 @@ func (c *Coordinator) Done() bool {
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	// Your code here.
 	c := Coordinator{
-		files:       files,
-		nReduce:     nReduce,
-		mapTasks:    make([]*Task, len(files)),
-		reduceTasks: make([]*Task, nReduce),
+		files:            files,
+		nReduce:          nReduce,
+		workerStatus:     make(map[int]TaskStatus),
+		mapTaskNumber:    0,
+		mapTaskStatus:    make(map[string]Status),
+		reduceTaskStatus: make(map[string]Status),
 	}
 
-	for i := range c.mapTasks {
-		c.mapTasks[i] = &Task{ID: i, Type: MapTask, Status: TaskStatusPending}
+	for _, v := range files {
+		c.mapTaskStatus[v] = Status{Status: TaskStatusPending}
 	}
 
-	for i := range c.reduceTasks {
-		c.reduceTasks[i] = &Task{ID: i, Type: ReduceTask, Status: TaskStatusPending}
-	}
+	// for i := range c.reduceTaskStatus {
+	// 	c.reduceTaskStatus[i] = &Task{ID: i, Type: ReduceTask, Status: TaskStatusPending}
+	// }
 
 	c.server()
 	return &c
