@@ -7,6 +7,7 @@ import (
 	"net/rpc"
 	"os"
 	"sync"
+	"time"
 )
 
 type TaskStatus int
@@ -22,7 +23,8 @@ const (
 )
 
 type Status struct {
-	Status TaskStatus
+	StartTime int64
+	Status    TaskStatus
 }
 
 // Arguments for updating the status of a map task.
@@ -71,7 +73,7 @@ func (c *Coordinator) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply
 	for k, v := range c.mapTaskStatus {
 		if v.Status == TaskStatusPending {
 			mapTask = &MapTask{InputFile: k, MapTaskNumber: c.mapTaskNumber, ReduceCount: c.nReduce}
-			c.mapTaskStatus[k] = Status{Status: TaskStatusRunning}
+			c.mapTaskStatus[k] = Status{Status: TaskStatusRunning, StartTime: time.Now().Unix()}
 			c.mapTaskNumber++
 			break
 		}
@@ -104,6 +106,7 @@ func (c *Coordinator) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply
 
 	if reduceIndex >= 0 {
 		reduceTask = &ReduceTask{ReduceCount: reduceIndex, IntermediateFiles: c.intermediateFiles[reduceIndex]}
+		c.reduceTaskStatus[reduceIndex] = Status{Status: TaskStatusRunning, StartTime: time.Now().Unix()}
 	}
 
 	if reduceTask != nil {
@@ -124,7 +127,7 @@ func (c *Coordinator) UpdateMapTask(args UpdateMapTaskArgs, reply *UpdateMapTask
 	defer c.filesLock.Unlock()
 
 	c.workerStatus[args.Pid] = TaskStatusIdle
-	c.mapTaskStatus[args.InputFile] = Status{Status: TaskStatusCompleted}
+	c.mapTaskStatus[args.InputFile] = Status{Status: TaskStatusCompleted, StartTime: -1}
 	for r := 0; r < c.nReduce; r++ {
 		c.intermediateFiles[r] = append(c.intermediateFiles[r], args.IntermediateFile[r])
 	}
@@ -136,9 +139,47 @@ func (c *Coordinator) UpdateReduceTask(args UpdateReduceTaskArgs, reply *UpdateR
 	defer c.filesLock.Unlock()
 
 	c.workerStatus[args.Pid] = TaskStatusIdle
-	c.reduceTaskStatus[args.ReduceNumber] = Status{Status: TaskStatusCompleted}
+	c.reduceTaskStatus[args.ReduceNumber] = Status{Status: TaskStatusCompleted, StartTime: -1}
 
 	return nil
+}
+
+func (c *Coordinator) RunWorkerTimeout() {
+	ticker := time.NewTicker(10 * time.Second)
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				if c.Done() {
+					return
+				}
+				c.CheckWorkerTimeout()
+			}
+		}
+	}()
+}
+
+func (c *Coordinator) CheckWorkerTimeout() {
+	c.filesLock.Lock()
+	defer c.filesLock.Unlock()
+	for k, v := range c.mapTaskStatus {
+		now := time.Now().Unix()
+		if v.Status == TaskStatusRunning {
+			if v.StartTime > 0 && now > (v.StartTime+10) {
+				c.mapTaskStatus[k] = Status{Status: TaskStatusPending, StartTime: -1}
+			}
+		}
+	}
+
+	for k, v := range c.reduceTaskStatus {
+		now := time.Now().Unix()
+		if v.Status == TaskStatusRunning {
+			if v.StartTime > 0 && now > (v.StartTime+10) {
+				c.reduceTaskStatus[k] = Status{Status: TaskStatusPending, StartTime: -1}
+			}
+		}
+	}
+
 }
 
 // start a thread that listens for RPCs from worker.go
@@ -211,13 +252,14 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	}
 
 	for _, v := range files {
-		c.mapTaskStatus[v] = Status{Status: TaskStatusPending}
+		c.mapTaskStatus[v] = Status{Status: TaskStatusPending, StartTime: -1}
 	}
 
 	for i := 0; i < nReduce; i++ {
-		c.reduceTaskStatus[i] = Status{Status: TaskStatusPending}
+		c.reduceTaskStatus[i] = Status{Status: TaskStatusPending, StartTime: -1}
 	}
 
+	c.RunWorkerTimeout()
 	c.server()
 	return &c
 }
