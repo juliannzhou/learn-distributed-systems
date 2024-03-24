@@ -52,7 +52,7 @@ type Coordinator struct {
 	nReduce           int
 	mapTaskStatus     map[string]Status
 	mapTaskNumber     int
-	reduceTaskStatus  map[string]Status
+	reduceTaskStatus  map[int]Status
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -92,6 +92,28 @@ func (c *Coordinator) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply
 		return nil
 	}
 
+	var reduceTask *ReduceTask = nil
+	var reduceIndex = -1
+
+	for k, v := range c.reduceTaskStatus {
+		if v.Status == TaskStatusPending {
+			reduceIndex = k
+			break
+		}
+	}
+
+	if reduceIndex >= 0 {
+		reduceTask = &ReduceTask{ReduceCount: reduceIndex, IntermediateFiles: c.intermediateFiles[reduceIndex]}
+	}
+
+	if reduceTask != nil {
+		reply.ReduceTask = reduceTask
+		reply.Done = false
+		c.workerStatus[args.Pid] = TaskStatusBusy
+		c.filesLock.Unlock()
+		return nil
+	}
+
 	c.filesLock.Unlock()
 	reply.Done = c.Done()
 	return nil
@@ -106,6 +128,16 @@ func (c *Coordinator) UpdateMapTask(args UpdateMapTaskArgs, reply *UpdateMapTask
 	for r := 0; r < c.nReduce; r++ {
 		c.intermediateFiles[r] = append(c.intermediateFiles[r], args.IntermediateFile[r])
 	}
+	return nil
+}
+
+func (c *Coordinator) UpdateReduceTask(args UpdateReduceTaskArgs, reply *UpdateReduceTaskReply) error {
+	c.filesLock.Lock()
+	defer c.filesLock.Unlock()
+
+	c.workerStatus[args.Pid] = TaskStatusIdle
+	c.reduceTaskStatus[args.ReduceNumber] = Status{Status: TaskStatusCompleted}
+
 	return nil
 }
 
@@ -147,19 +179,19 @@ func (c *Coordinator) Done() bool {
 	defer c.filesLock.Unlock()
 	ret := true
 
-	// Check if all map tasks have completed
-	for _, task := range c.mapTaskStatus {
-		if task.Status != TaskStatusCompleted {
-			return false
-		}
-	}
-
-	// Check if all reduce tasks have completed
-	// for _, task := range c.reduceTasks {
+	// // Check if all map tasks have completed
+	// for _, task := range c.mapTaskStatus {
 	// 	if task.Status != TaskStatusCompleted {
 	// 		return false
 	// 	}
 	// }
+
+	// Check if all reduce tasks have completed
+	for _, task := range c.reduceTaskStatus {
+		if task.Status != TaskStatusCompleted {
+			return false
+		}
+	}
 
 	return ret
 }
@@ -175,16 +207,16 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		workerStatus:     make(map[int]TaskStatus),
 		mapTaskNumber:    0,
 		mapTaskStatus:    make(map[string]Status),
-		reduceTaskStatus: make(map[string]Status),
+		reduceTaskStatus: make(map[int]Status),
 	}
 
 	for _, v := range files {
 		c.mapTaskStatus[v] = Status{Status: TaskStatusPending}
 	}
 
-	// for i := range c.reduceTaskStatus {
-	// 	c.reduceTaskStatus[i] = &Task{ID: i, Type: ReduceTask, Status: TaskStatusPending}
-	// }
+	for i := 0; i < nReduce; i++ {
+		c.reduceTaskStatus[i] = Status{Status: TaskStatusPending}
+	}
 
 	c.server()
 	return &c

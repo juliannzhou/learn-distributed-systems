@@ -52,6 +52,10 @@ func Worker(mapf func(string, string) []KeyValue,
 		if reply.MapTask != nil {
 			MapTaskHandler(reply.MapTask, mapf)
 		}
+
+		if reply.ReduceTask != nil {
+			ReduceTaskHandler(reply.ReduceTask, reducef)
+		}
 	}
 
 	// for reduceTask, kvs := range intermediate {
@@ -100,10 +104,6 @@ func MapTaskHandler(task *MapTask, mapf func(string, string) []KeyValue) {
 	file.Close()
 
 	kva := mapf(filename, string(content))
-	keys := make([]KeyValue, 0, len(kva))
-	for _, k := range kva {
-		keys = append(keys, k)
-	}
 
 	sort.Sort(ByKey(kva))
 	partitionedKva := make([][]KeyValue, reduceCount)
@@ -131,9 +131,65 @@ func MapTaskHandler(task *MapTask, mapf func(string, string) []KeyValue) {
 
 }
 
+func ReduceTaskHandler(task *ReduceTask, reducef func(string, []string) string) {
+	files := task.IntermediateFiles
+	intermediate := []KeyValue{}
+
+	for _, f := range files {
+		dat, err := os.ReadFile(f)
+		if err != nil {
+			fmt.Println("Read error: ")
+		}
+		var input []KeyValue
+		err = json.Unmarshal(dat, &input)
+		if err != nil {
+			fmt.Println("Unmarshal error: ", err.Error())
+		}
+
+		intermediate = append(intermediate, input...)
+	}
+
+	sort.Sort(ByKey(intermediate))
+
+	oname := fmt.Sprintf("mr-out-%v", task.ReduceCount)
+	temp, err := os.CreateTemp(".", oname)
+	if err != nil {
+		fmt.Println("Error creating temp file")
+	}
+
+	// call Reduce on each distinct key in intermediate[],
+	// and print the result to mr-out-0.
+	//
+	i := 0
+	for i < len(intermediate) {
+		j := i + 1
+		for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, intermediate[k].Value)
+		}
+		output := reducef(intermediate[i].Key, values)
+
+		// this is the correct format for each line of Reduce output.
+		fmt.Fprintf(temp, "%v %v\n", intermediate[i].Key, output)
+
+		i = j
+	}
+
+	os.Rename(temp.Name(), oname)
+}
+
 func UpdateMapTask(args UpdateMapTaskArgs) UpdateMapTaskReply {
 	reply := UpdateMapTaskReply{}
 	call("Coordinator.UpdateMapTask", &args, &reply)
+	return reply
+}
+
+func UpdateReduceTask(args UpdateReduceTaskArgs) UpdateReduceTaskReply {
+	reply := UpdateReduceTaskReply{}
+	call("Coordinator.UpdateReduceTask", &args, &reply)
 	return reply
 }
 

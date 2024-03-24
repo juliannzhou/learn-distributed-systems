@@ -56,6 +56,14 @@ type UpdateMapTaskArgs struct {
 type UpdateMapTaskReply struct {
 }
 
+type UpdateReduceTaskArgs struct {
+	Pid          int
+	ReduceNumber int
+}
+
+type UpdateReduceTaskReply struct {
+}
+
 // Add your RPC definitions here.
 
 // Cook up a unique-ish UNIX-domain socket name
