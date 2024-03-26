@@ -129,6 +129,8 @@ func MapTaskHandler(task *MapTask, mapf func(string, string) []KeyValue) {
 		ofile.Close()
 	}
 
+	UpdateMapTask(UpdateMapTaskArgs{InputFile: filename, IntermediateFile: intermediateFiles, Pid: os.Getpid()})
+
 }
 
 func ReduceTaskHandler(task *ReduceTask, reducef func(string, []string) string) {
@@ -179,6 +181,8 @@ func ReduceTaskHandler(task *ReduceTask, reducef func(string, []string) string) 
 	}
 
 	os.Rename(temp.Name(), oname)
+
+	UpdateReduceTask(UpdateReduceTaskArgs{Pid: os.Getpid(), ReduceNumber: task.ReduceCount})
 }
 
 func UpdateMapTask(args UpdateMapTaskArgs) UpdateMapTaskReply {

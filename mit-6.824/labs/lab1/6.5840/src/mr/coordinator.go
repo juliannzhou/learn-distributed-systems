@@ -243,12 +243,13 @@ func (c *Coordinator) Done() bool {
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	// Your code here.
 	c := Coordinator{
-		files:            files,
-		nReduce:          nReduce,
-		workerStatus:     make(map[int]TaskStatus),
-		mapTaskNumber:    0,
-		mapTaskStatus:    make(map[string]Status),
-		reduceTaskStatus: make(map[int]Status),
+		files:             files,
+		nReduce:           nReduce,
+		workerStatus:      make(map[int]TaskStatus),
+		mapTaskNumber:     0,
+		mapTaskStatus:     make(map[string]Status),
+		reduceTaskStatus:  make(map[int]Status),
+		intermediateFiles: make(map[int][]string),
 	}
 
 	for _, v := range files {
